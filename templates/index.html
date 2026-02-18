@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>C Lexer Visualizer</title>
+
+    <!-- D3.js -->
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 40px;
+            background-color: #f4f6f8;
+        }
+
+        h1 {
+            text-align: center;
+        }
+
+        textarea {
+            width: 100%;
+            height: 120px;
+            font-family: monospace;
+            font-size: 14px;
+            padding: 10px;
+        }
+
+        button {
+            padding: 8px 16px;
+            margin-top: 10px;
+            cursor: pointer;
+        }
+
+        .section {
+            margin-top: 30px;
+        }
+
+        #codeDisplay {
+            background: #1e1e1e;
+            color: white;
+            padding: 15px;
+            font-family: monospace;
+            white-space: pre;
+            border-radius: 6px;
+            min-height: 120px;
+            margin-top: 10px;
+        }
+
+        #executionBox {
+            background: black;
+            color: #00ff00;
+            padding: 20px;
+            font-family: monospace;
+            min-height: 140px;
+            border-radius: 8px;
+        }
+
+        #symbolTableBox {
+            background: white;
+            padding: 10px;
+            border: 1px solid #ccc;
+        }
+
+        table {
+            border-collapse: collapse;
+            width: 50%;
+        }
+
+        table th, table td {
+            border: 1px solid #999;
+            padding: 6px 12px;
+            text-align: center;
+        }
+
+        table th {
+            background-color: #e0e0e0;
+        }
+
+        #dfaSvg {
+            background: #111;
+            border-radius: 8px;
+        }
+
+    </style>
+</head>
+
+<body>
+
+<h1>C Lexical Analyzer Visualizer</h1>
+
+<div class="section">
+    <h3>Input C Code</h3>
+    <textarea id="codeInput">
+int x = 10;
+float y = 20.5;
+    </textarea>
+    <br>
+    <button onclick="analyzeCode()">Analyze</button>
+
+    <h4>Code Execution View</h4>
+    <div id="codeDisplay"></div>
+</div>
+
+<div class="section">
+    <h3>Live Execution</h3>
+
+    <div id="executionBox">
+        Press Analyze to start...
+    </div>
+
+    <br>
+    <button onclick="playSteps()">▶ Play</button>
+    <button onclick="pauseSteps()">⏸ Pause</button>
+
+    <br><br>
+    Speed:
+    <input type="range" min="100" max="1000" value="500" id="speedSlider">
+</div>
+
+<div class="section">
+    <h3>Symbol Table (Live)</h3>
+    <div id="symbolTableBox"></div>
+</div>
+
+<div class="section">
+    <h3>DFA State Visualization</h3>
+    <svg id="dfaSvg" width="800" height="400"></svg>
+</div>
+
+<script>
+
+// ===============================
+// GLOBALS
+// ===============================
+
+let stepsData = [];
+let currentStep = 0;
+let interval = null;
+
+
+// ===============================
+// ANALYZE
+// ===============================
+
+function analyzeCode() {
+
+    pauseSteps();
+
+    const code = document.getElementById("codeInput").value;
+
+    document.getElementById("codeDisplay").textContent = code;
+
+    fetch("/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: code })
+    })
+    .then(res => res.json())
+    .then(data => {
+        stepsData = data.steps;
+        currentStep = 0;
+
+        document.getElementById("executionBox").innerHTML =
+            "<span style='color:yellow'>Ready to Play...</span>";
+
+        document.getElementById("symbolTableBox").innerHTML = "";
+
+        drawDFA();
+    });
+}
+
+
+// ===============================
+// PLAYBACK
+// ===============================
+
+function playSteps() {
+
+    if (interval) return;
+
+    let speed = document.getElementById("speedSlider").value;
+
+    interval = setInterval(() => {
+
+        if (currentStep >= stepsData.length) {
+            clearInterval(interval);
+            interval = null;
+            return;
+        }
+
+        showStep(stepsData[currentStep]);
+        currentStep++;
+
+    }, speed);
+}
+
+function pauseSteps() {
+    clearInterval(interval);
+    interval = null;
+}
+
+
+// ===============================
+// STEP DISPLAY
+// ===============================
+
+function showStep(step) {
+
+    highlightCharacter(step);
+    updateSymbolTable(step);
+    highlightState(step.current_state);
+
+    let color = "#00ff00";
+
+    if (step.action === "BUILDING_IDENTIFIER") color = "#00ffff";
+    if (step.action === "BUILDING_NUMBER") color = "#66ff66";
+    if (step.action === "DECIMAL_POINT") color = "#ff66ff";
+    if (step.action === "TOKEN_GENERATED") color = "#ffcc00";
+    if (step.action === "WHITESPACE_SKIP") color = "#888888";
+    if (step.action === "ERROR_UNKNOWN_CHAR") color = "#ff0000";
+
+    document.getElementById("executionBox").innerHTML = `
+        <div style="color:${color};">
+        <b>Character:</b> ${step.char || "-"}<br>
+        <b>Action:</b> ${step.action}<br>
+        <b>State:</b> ${step.current_state}<br>
+        <b>Lexeme:</b> ${step.current_lexeme}<br>
+        <b>Token:</b> ${step.token_generated || "-"}
+        </div>
+    `;
+}
+
+
+// ===============================
+// CHARACTER HIGHLIGHT
+// ===============================
+
+function highlightCharacter(step) {
+
+    const code = document.getElementById("codeInput").value;
+
+    if (!step.char) {
+        document.getElementById("codeDisplay").textContent = code;
+        return;
+    }
+
+    let index = findCharIndex(code, step.line, step.column);
+
+    let before = code.slice(0, index);
+    let current = code[index] || "";
+    let after = code.slice(index + 1);
+
+    document.getElementById("codeDisplay").innerHTML =
+        before +
+        `<span style="background: yellow; color: black;">${current}</span>` +
+        after;
+}
+
+function findCharIndex(code, line, column) {
+
+    let lines = code.split("\n");
+    let index = 0;
+
+    for (let i = 0; i < line - 1; i++)
+        index += lines[i].length + 1;
+
+    return index + (column - 1);
+}
+
+
+// ===============================
+// SYMBOL TABLE
+// ===============================
+
+function updateSymbolTable(step) {
+
+    let tableHTML =
+        "<table><tr><th>Identifier</th><th>Type</th><th>Size</th><th>Line</th></tr>";
+
+    for (let key in step.symbol_table_snapshot) {
+        let entry = step.symbol_table_snapshot[key];
+
+        tableHTML += `<tr>
+            <td>${key}</td>
+            <td>${entry.type || "-"}</td>
+            <td>${entry.size || "-"}</td>
+            <td>${entry.declared_line}</td>
+        </tr>`;
+    }
+
+    tableHTML += "</table>";
+
+    document.getElementById("symbolTableBox").innerHTML = tableHTML;
+}
+
+
+// ===============================
+// D3 DFA VISUALIZATION
+// ===============================
+
+let svg = d3.select("#dfaSvg");
+
+const nodes = [
+    { id: "START", x: 100, y: 200 },
+    { id: "IDENTIFIER", x: 300, y: 100 },
+    { id: "NUMBER", x: 300, y: 300 },
+    { id: "FLOAT", x: 500, y: 300 },
+    { id: "OPERATOR", x: 500, y: 100 }
+];
+
+const links = [
+    { source: "START", target: "IDENTIFIER" },
+    { source: "START", target: "NUMBER" },
+    { source: "IDENTIFIER", target: "IDENTIFIER" },
+    { source: "NUMBER", target: "NUMBER" },
+    { source: "NUMBER", target: "FLOAT" },
+    { source: "START", target: "OPERATOR" }
+];
+
+function drawDFA() {
+
+    svg.selectAll("*").remove();
+
+    svg.append("defs")
+        .append("marker")
+        .attr("id", "arrow")
+        .attr("viewBox", "0 -5 10 10")
+        .attr("refX", 30)
+        .attr("refY", 0)
+        .attr("markerWidth", 6)
+        .attr("markerHeight", 6)
+        .attr("orient", "auto")
+        .append("path")
+        .attr("d", "M0,-5L10,0L0,5")
+        .attr("fill", "#888");
+
+    links.forEach(link => {
+
+        let source = nodes.find(n => n.id === link.source);
+        let target = nodes.find(n => n.id === link.target);
+
+        svg.append("line")
+            .attr("x1", source.x)
+            .attr("y1", source.y)
+            .attr("x2", target.x)
+            .attr("y2", target.y)
+            .attr("stroke", "#888")
+            .attr("stroke-width", 2)
+            .attr("marker-end", "url(#arrow)");
+    });
+
+    svg.selectAll("circle")
+        .data(nodes)
+        .enter()
+        .append("circle")
+        .attr("id", d => "node-" + d.id)
+        .attr("cx", d => d.x)
+        .attr("cy", d => d.y)
+        .attr("r", 40)
+        .attr("fill", "#444");
+
+    svg.selectAll("text")
+        .data(nodes)
+        .enter()
+        .append("text")
+        .attr("x", d => d.x)
+        .attr("y", d => d.y + 5)
+        .attr("text-anchor", "middle")
+        .attr("fill", "white")
+        .text(d => d.id);
+}
+
+function highlightState(currentState) {
+
+    nodes.forEach(node => {
+        d3.select("#node-" + node.id)
+            .transition()
+            .duration(300)
+            .attr("fill", node.id === currentState ? "#00ff00" : "#444");
+    });
+}
+
+drawDFA();
+
+</script>
+
+</body>
+</html>
