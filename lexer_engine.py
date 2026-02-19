@@ -3,265 +3,248 @@
 # ============================
 
 class LexicalError(Exception):
-    def __init__(self, message, line, column):
+    def __init__(self, message, line, column=None):
         self.message = message
         self.line = line
         self.column = column
-        super().__init__(f"{message} at line {line}, column {column}")
-
-
-# ============================
-# LEXICAL SPECIFICATION
-# ============================
-
-KEYWORDS = {
-    "auto", "break", "case", "char", "const",
-    "continue", "default", "do", "double",
-    "else", "enum", "extern", "float",
-    "for", "goto", "if", "int", "long",
-    "register", "return", "short", "signed",
-    "sizeof", "static", "struct", "switch",
-    "typedef", "union", "unsigned", "void",
-    "volatile", "while"
-}
-
-OPERATORS = {
-    "++", "--", "==", "!=", "<=", ">=",
-    "&&", "||", "+", "-", "*", "/", "%",
-    "=", "<", ">", "!", "&", "|", "^"
-}
-
-DELIMITERS = {
-    "(", ")", "{", "}", "[", "]",
-    ";", ",", ".", ":"
-}
-
-WHITESPACE = {" ", "\t", "\n"}
-
+        super().__init__(f"Lexical Error: {message} at line {line}")
 
 # ============================
 # TOKEN CLASS
 # ============================
 
 class Token:
-    def __init__(self, token_type, value, line):
+    def __init__(self, token_type, value, line, column=0):
         self.type = token_type
         self.value = value
         self.line = line
-
-    def __repr__(self):
+        self.column = column
+    
+    def __str__(self):
         return f"<{self.type}, '{self.value}', line {self.line}>"
-
+    
+    def __repr__(self):
+        return self.__str__()
 
 # ============================
-# CHAR STREAM
+# CHARACTER STREAM CLASS
 # ============================
 
 class CharStream:
-    def __init__(self, code):
-        self.code = code
+    def __init__(self, text):
+        self.text = text
         self.position = 0
         self.line = 1
         self.column = 1
-
-    def peek(self, offset=0):
-        index = self.position + offset
-        if index < len(self.code):
-            return self.code[index]
-        return None
-
-    def advance(self):
-        char = self.peek()
-        if char is None:
+    
+    def get_char(self):
+        if self.position >= len(self.text):
             return None
-
+        
+        char = self.text[self.position]
         self.position += 1
-
-        if char == "\n":
+        
+        if char == '\n':
             self.line += 1
             self.column = 1
         else:
             self.column += 1
-
+        
         return char
-
-    def is_end(self):
-        return self.position >= len(self.code)
-
+    
+    def peek_char(self):
+        if self.position >= len(self.text):
+            return None
+        return self.text[self.position]
+    
+    def get_position(self):
+        return self.line, self.column
 
 # ============================
-# LEXER
+# LEXER CLASS
 # ============================
 
 class Lexer:
-
-    def __init__(self, code):
-        self.stream = CharStream(code)
+    def __init__(self, text):
+        self.stream = CharStream(text)
         self.tokens = []
         self.steps = []
         self.symbol_table = {}
-        self.current_decl_type = None
+        self.keywords = {'int', 'float', 'char', 'double', 'if', 'else', 'while', 'for', 'return'}
+        self.operators = {'+', '-', '*', '/', '=', '==', '!=', '<', '>', '<=', '>='}
+        self.delimiters = {';', ',', '(', ')', '{', '}'}
+        self.current_lexeme = ""
         self.current_state = "START"
+    
+    def get_next_token(self):
         self.current_lexeme = ""
-
-    def log_step(self, char, action, next_state=None, token_generated=None):
-        step_info = {
-            "char": char,
-            "line": self.stream.line,
-            "column": self.stream.column,
-            "current_state": self.current_state,
-            "next_state": next_state,
-            "current_lexeme": self.current_lexeme,
-            "action": action,
-            "token_generated": token_generated,
-            "symbol_table_snapshot": dict(self.symbol_table)
-        }
-        self.steps.append(step_info)
-        if next_state:
-            self.current_state = next_state
-
-    def tokenize(self):
-
-        while not self.stream.is_end():
-            char = self.stream.peek()
-
-            if char in WHITESPACE:
-                self.log_step(char, "WHITESPACE_SKIP")
-                self.stream.advance()
+        self.current_state = "START"
+        
+        char = self.stream.get_char()
+        
+        while char is not None:
+            # Log character processing for live execution
+            self.log_step(f"Processing character: '{char}'", char=char, lexeme=self.current_lexeme)
+            
+            if char.isspace():
+                self.current_state = "WHITESPACE"
+                self.log_step(f"Skipping whitespace", char=char, lexeme=self.current_lexeme)
+                char = self.stream.get_char()
                 continue
-
-            if char.isalpha() or char == "_":
-                self.handle_identifier()
-                continue
-
-            if char.isdigit():
-                self.handle_number()
-                continue
-
-            if char in "".join(OPERATORS):
-                self.handle_operator()
-                continue
-
-            if char in DELIMITERS:
-                token = Token("DELIMITER", char, self.stream.line)
-                self.tokens.append(token)
-                self.log_step(char, "DELIMITER_FOUND",
-                              token_generated=str(token))
-                self.stream.advance()
-                continue
-
-            raise LexicalError(
-                f"Invalid character '{char}'",
-                self.stream.line,
-                self.stream.column
-            )
-
-        return self.tokens
-
-    def handle_identifier(self):
-
-        self.current_state = "IDENTIFIER"
-        self.current_lexeme = ""
-
-        while True:
-            char = self.stream.peek()
-            if char and (char.isalnum() or char == "_"):
-                self.current_lexeme += char
-                self.log_step(char, "BUILDING_IDENTIFIER", "IDENTIFIER")
-                self.stream.advance()
+            
+            if char.isalpha():
+                self.current_state = "BUILDING_IDENTIFIER"
+                return self._read_identifier(char)
+            elif char.isdigit():
+                self.current_state = "BUILDING_NUMBER"
+                return self._read_number(char)
+            elif char == '"':
+                self.current_state = "BUILDING_STRING"
+                return self._read_string(char)
+            elif char in self.operators:
+                self.current_state = "OPERATOR"
+                return self._read_operator(char)
+            elif char in self.delimiters:
+                self.current_state = "DELIMITER"
+                return self._read_delimiter(char)
             else:
-                break
-
-        if self.current_lexeme in KEYWORDS:
+                line, column = self.stream.get_position()
+                raise LexicalError(f"Unexpected character: '{char}'", line, column)
+        
+        return Token("EOF", "", self.stream.line, self.stream.column)
+    
+    def _read_identifier(self, first_char):
+        self.current_lexeme = first_char
+        self.current_state = "IDENTIFIER"
+        char = self.stream.peek_char()
+        
+        while char is not None and (char.isalnum() or char == '_'):
+            self.current_lexeme += self.stream.get_char()
+            char = self.stream.peek_char()
+            self.log_step(f"Building identifier: '{self.current_lexeme}'", lexeme=self.current_lexeme)
+        
+        line, column = self.stream.get_position()
+        
+        if self.current_lexeme in self.keywords:
             token_type = "KEYWORD"
-
-            if self.current_lexeme in {"int", "float", "char", "double"}:
-                self.current_decl_type = self.current_lexeme
+            self.current_state = "KEYWORD"
+            self.log_step(f"Found keyword: {self.current_lexeme}", lexeme=self.current_lexeme)
         else:
             token_type = "IDENTIFIER"
-
-            if self.current_lexeme not in self.symbol_table:
-
-                size_map = {
-                    "int": 4,
-                    "float": 4,
-                    "char": 1,
-                    "double": 8
-                }
-
-                self.symbol_table[self.current_lexeme] = {
-                    "type": self.current_decl_type,
-                    "size": size_map.get(self.current_decl_type),
-                    "declared_line": self.stream.line
-                }
-
-                self.current_decl_type = None
-
-        token = Token(token_type, self.current_lexeme, self.stream.line)
-        self.tokens.append(token)
-
-        self.log_step(None, "TOKEN_GENERATED",
-                      token_generated=str(token))
-
-        self.current_state = "START"
-
-    def handle_number(self):
-
+            self.symbol_table[self.current_lexeme] = {'type': 'variable', 'line': line}
+            self.log_step(f"Found identifier: {self.current_lexeme}", lexeme=self.current_lexeme)
+        
+        token = Token(token_type, self.current_lexeme, line, column)
+        self.log_step(f"Token generated: {token}", lexeme=self.current_lexeme)
+        return token
+    
+    def _read_number(self, first_char):
+        self.current_lexeme = first_char
         self.current_state = "NUMBER"
+        has_decimal = False
+        char = self.stream.peek_char()
+        
+        while char is not None and (char.isdigit() or (char == '.' and not has_decimal)):
+            if char == '.':
+                has_decimal = True
+                self.current_state = "FLOAT"
+            self.current_lexeme += self.stream.get_char()
+            char = self.stream.peek_char()
+            self.log_step(f"Building number: '{self.current_lexeme}'", lexeme=self.current_lexeme)
+        
+        line, column = self.stream.get_position()
+        token_type = "FLOAT" if has_decimal else "INTEGER"
+        self.log_step(f"Found number: {self.current_lexeme}", lexeme=self.current_lexeme)
+        
+        token = Token(token_type, self.current_lexeme, line, column)
+        self.log_step(f"Token generated: {token}", lexeme=self.current_lexeme)
+        return token
+    
+    def _read_string(self, first_char):
         self.current_lexeme = ""
-        has_dot = False
-
-        while True:
-            char = self.stream.peek()
-
-            if char and char.isdigit():
-                self.current_lexeme += char
-                self.log_step(char, "BUILDING_NUMBER", "NUMBER")
-                self.stream.advance()
-
-            elif char == ".":
-                if has_dot:
-                    raise LexicalError(
-                        "Multiple decimal points in number",
-                        self.stream.line,
-                        self.stream.column
-                    )
-                has_dot = True
-                self.current_lexeme += char
-                self.log_step(char, "DECIMAL_POINT", "FLOAT")
-                self.stream.advance()
-
-            else:
-                break
-
-        token_type = "FLOAT" if has_dot else "INTEGER"
-        token = Token(token_type, self.current_lexeme, self.stream.line)
-        self.tokens.append(token)
-
-        self.log_step(None, "TOKEN_GENERATED",
-                      token_generated=str(token))
-
-        self.current_state = "START"
-
-    def handle_operator(self):
-
+        self.current_state = "STRING"
+        char = self.stream.get_char()
+        
+        while char is not None and char != '"':
+            self.current_lexeme += char
+            self.log_step(f"Building string: '{self.current_lexeme}'", lexeme=self.current_lexeme)
+            if char == '\n':
+                line, column = self.stream.get_position()
+                raise LexicalError("Unterminated string", line, column)
+            char = self.stream.get_char()
+        
+        if char is None:
+            line, column = self.stream.get_position()
+            raise LexicalError("Unterminated string", line, column)
+        
+        line, column = self.stream.get_position()
+        self.log_step(f"Found string: {self.current_lexeme}", lexeme=self.current_lexeme)
+        
+        token = Token("STRING", self.current_lexeme, line, column)
+        self.log_step(f"Token generated: {token}", lexeme=self.current_lexeme)
+        return token
+    
+    def _read_operator(self, first_char):
+        line, column = self.stream.get_position()
         self.current_state = "OPERATOR"
-        self.current_lexeme = ""
-
-        first_char = self.stream.advance()
-        self.current_lexeme += first_char
-
-        next_char = self.stream.peek()
-        if next_char:
-            potential_op = self.current_lexeme + next_char
-            if potential_op in OPERATORS:
-                self.current_lexeme += self.stream.advance()
-
-        token = Token("OPERATOR", self.current_lexeme, self.stream.line)
-        self.tokens.append(token)
-
-        self.log_step(self.current_lexeme,
-                      "OPERATOR_FOUND",
-                      token_generated=str(token))
-
-        self.current_state = "START"
+        
+        # Check for multi-character operators
+        next_char = self.stream.peek_char()
+        two_char_op = first_char + (next_char or '')
+        
+        if two_char_op in {'==', '!=', '<=', '>='}:
+            self.stream.get_char()  # Consume the second character
+            self.current_lexeme = two_char_op
+            self.log_step(f"Found operator: {two_char_op}", lexeme=two_char_op)
+            token = Token("OPERATOR", two_char_op, line, column)
+            self.log_step(f"Token generated: {token}", lexeme=two_char_op)
+            return token
+        
+        self.current_lexeme = first_char
+        self.log_step(f"Found operator: {first_char}", lexeme=first_char)
+        token = Token("OPERATOR", first_char, line, column)
+        self.log_step(f"Token generated: {token}", lexeme=first_char)
+        return token
+    
+    def _read_delimiter(self, first_char):
+        line, column = self.stream.get_position()
+        self.current_state = "DELIMITER"
+        self.current_lexeme = first_char
+        self.log_step(f"Found delimiter: {first_char}", lexeme=first_char)
+        token = Token("DELIMITER", first_char, line, column)
+        self.log_step(f"Token generated: {token}", lexeme=first_char)
+        return token
+    
+    def log_step(self, message, action='TOKEN_GENERATED', char=None, lexeme=None):
+        line, column = self.stream.get_position()
+        
+        step = {
+            'action': action,
+            'message': message,
+            'line': line,
+            'column': column,
+            'current_state': self.current_state,
+            'current_lexeme': self.current_lexeme,
+            'symbol_table_snapshot': self.symbol_table.copy()  # Include current symbol table
+        }
+        
+        # Add character info for live execution
+        if char is not None:
+            step['char'] = char
+        
+        # Add token info when generated
+        if action == 'TOKEN_GENERATED' and hasattr(self, '_last_token'):
+            step['token_generated'] = str(self._last_token)
+        
+        self.steps.append(step)
+    
+    def tokenize(self):
+        self.tokens = []
+        token = self.get_next_token()
+        
+        while token.type != "EOF":
+            self.tokens.append(token)
+            self._last_token = token  # Store for logging
+            token = self.get_next_token()
+        
+        return self.tokens
